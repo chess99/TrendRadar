@@ -7,11 +7,11 @@ SQLite 存储 Mixin
 
 import sqlite3
 from abc import abstractmethod
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from trendradar.storage.base import NewsItem, NewsData, RSSItem, RSSData
+from trendradar.storage.base import NewsData, NewsItem, RSSData, RSSItem
 from trendradar.utils.url import normalize_url
 
 
@@ -754,6 +754,54 @@ class SQLiteStorageMixin:
         except Exception as e:
             print(f"[存储] 记录推送失败: {e}")
             return False
+
+    def _get_last_push_time_impl(self, date: Optional[str] = None) -> Optional[str]:
+        """
+        获取上次推送时间（全局查询，跨日期）
+
+        修改说明：
+        - 原逻辑：只查询指定日期的推送记录
+        - 新逻辑：查询所有日期的推送记录，返回最近一次的推送时间
+
+        Args:
+            date: 日期字符串（YYYY-MM-DD），已废弃，保留用于兼容性（未使用）
+
+        Returns:
+            上次推送时间字符串（格式：YYYY-MM-DD HH:MM:SS），如果从未推送过则返回 None
+        """
+        try:
+            # 获取今天和昨天的日期
+            today = self._format_date_folder(None)
+            yesterday_date = (self._get_configured_time() - timedelta(days=1)).strftime("%Y-%m-%d")
+            
+            # 查询今天和昨天的推送记录
+            dates_to_check = [today, yesterday_date]
+            last_push_time = None
+            
+            for check_date in dates_to_check:
+                try:
+                    conn = self._get_connection(check_date)
+                    cursor = conn.cursor()
+                    
+                    cursor.execute("""
+                        SELECT push_time FROM push_records WHERE date = ? AND pushed = 1
+                    """, (check_date,))
+                    
+                    row = cursor.fetchone()
+                    if row and row[0]:
+                        push_time = row[0]
+                        # 保留最新的推送时间
+                        if last_push_time is None or push_time > last_push_time:
+                            last_push_time = push_time
+                except Exception:
+                    # 如果某个日期的数据库不存在，跳过
+                    continue
+            
+            return last_push_time
+
+        except Exception as e:
+            print(f"[存储] 获取上次推送时间失败: {e}")
+            return None
 
     # ========================================
     # RSS 数据存储

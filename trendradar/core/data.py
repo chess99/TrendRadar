@@ -11,7 +11,7 @@ Author: TrendRadar Team
 """
 
 from pathlib import Path
-from typing import Dict, List, Tuple, Optional, Callable
+from typing import Callable, Dict, List, Optional, Tuple
 
 
 def save_titles_to_file(
@@ -186,7 +186,13 @@ def detect_latest_new_titles_from_storage(
     current_platform_ids: Optional[List[str]] = None,
 ) -> Dict:
     """
-    从存储后端检测最新批次的新增标题
+    从存储后端检测新增标题（从上次推送到现在的所有新增，跨天支持）
+
+    修改说明：
+    - 原逻辑：只检测最新一次抓取的新增标题
+    - 新逻辑：检测从上次推送时间之后的所有新增标题（包括昨天和今天的数据）
+    - 时间跨度限制：最多26小时，避免数据爆炸
+    - 如果今天未推送过，则检测从昨天第一次抓取之后的所有新增标题
 
     Args:
         storage_manager: 存储管理器实例
@@ -196,63 +202,151 @@ def detect_latest_new_titles_from_storage(
         Dict: 新增标题 {source_id: {title: title_data}}
     """
     try:
-        # 获取最新抓取数据
-        latest_data = storage_manager.get_latest_crawl_data()
-        if not latest_data or not latest_data.items:
-            return {}
+        from datetime import datetime, timedelta
 
-        # 获取所有历史数据
-        all_data = storage_manager.get_today_all_data()
-        if not all_data or not all_data.items:
+        # 获取后端实例以访问日期格式化方法
+        backend = storage_manager.get_backend()
+        
+        # 获取今天和昨天的日期
+        today_date = backend._format_date_folder(None)
+        yesterday_date = (backend._get_configured_time() - timedelta(days=1)).strftime("%Y-%m-%d")
+
+        # 读取今天和昨天的数据
+        today_data = storage_manager.get_today_all_data(today_date)
+        yesterday_data = storage_manager.get_today_all_data(yesterday_date)
+
+        # 合并数据
+        all_data_items = {}
+        all_data_id_to_name = {}
+        
+        if today_data and today_data.items:
+            for source_id, news_list in today_data.items.items():
+                if source_id not in all_data_items:
+                    all_data_items[source_id] = []
+                all_data_items[source_id].extend(news_list)
+            all_data_id_to_name.update(today_data.id_to_name)
+        
+        if yesterday_data and yesterday_data.items:
+            for source_id, news_list in yesterday_data.items.items():
+                if source_id not in all_data_items:
+                    all_data_items[source_id] = []
+                all_data_items[source_id].extend(news_list)
+            all_data_id_to_name.update(yesterday_data.id_to_name)
+
+        if not all_data_items:
             # 没有历史数据（第一次抓取），不应该有"新增"标题
             return {}
 
-        # 获取最新批次时间
-        latest_time = latest_data.crawl_time
+        # 获取上次推送时间（全局查询）
+        last_push_time_str = storage_manager.get_last_push_time()
+        
+        # 确定基准时间：如果推送过，使用上次推送时间；否则使用昨天第一次抓取时间
+        if last_push_time_str:
+            # 推送过，使用上次推送时间作为基准
+            try:
+                push_datetime = datetime.strptime(last_push_time_str, "%Y-%m-%d %H:%M:%S")
+                # 获取当前时间
+                backend = storage_manager.get_backend()
+                current_time = backend._get_configured_time()
+                
+                # 时间跨度限制：最多26小时
+                time_diff = current_time - push_datetime.replace(tzinfo=current_time.tzinfo)
+                max_hours = 26
+                if time_diff.total_seconds() > max_hours * 3600:
+                    # 如果超过26小时，将基准时间调整为26小时前
+                    base_datetime = current_time - timedelta(hours=max_hours)
+                    base_time_str = base_datetime.strftime("%Y-%m-%d %H:%M")
+                    print(f"[增量检测] 上次推送时间超过{max_hours}小时，限制为{max_hours}小时内的数据")
+                else:
+                    # 构建用于比较的时间字符串（格式：YYYY-MM-DD HH:MM）
+                    base_time_str = push_datetime.strftime("%Y-%m-%d %H:%M")
+                
+                print(f"[增量检测] 使用上次推送时间作为基准: {last_push_time_str}")
+            except (ValueError, TypeError) as e:
+                print(f"[增量检测] 解析上次推送时间失败: {e}，使用昨天第一次抓取时间作为基准")
+                base_time_str = None
+        else:
+            # 从未推送过，使用昨天第一次抓取时间作为基准
+            base_time_str = None
+            print("[增量检测] 从未推送过，检测从昨天第一次抓取之后的所有新增")
 
-        # 步骤1：收集最新批次的标题（last_crawl_time = latest_time 的标题）
-        latest_titles = {}
-        for source_id, news_list in latest_data.items.items():
+        # 收集所有标题及其首次出现时间
+        all_titles_with_time = {}
+        for source_id, news_list in all_data_items.items():
             if current_platform_ids is not None and source_id not in current_platform_ids:
                 continue
-            latest_titles[source_id] = {}
-            for item in news_list:
-                latest_titles[source_id][item.title] = {
-                    "ranks": [item.rank],
-                    "url": item.url or "",
-                    "mobileUrl": item.mobile_url or "",
-                }
 
-        # 步骤2：收集历史标题
-        # 关键逻辑：一个标题只要其 first_crawl_time < latest_time，就是历史标题
-        # 这样即使同一标题有多条记录（URL 不同），只要任何一条是历史的，该标题就算历史
-        historical_titles = {}
-        for source_id, news_list in all_data.items.items():
-            if current_platform_ids is not None and source_id not in current_platform_ids:
-                continue
+            if source_id not in all_titles_with_time:
+                all_titles_with_time[source_id] = {}
 
-            historical_titles[source_id] = set()
             for item in news_list:
                 first_time = getattr(item, 'first_time', item.crawl_time)
-                # 如果该记录的首次出现时间早于最新批次，则该标题是历史标题
-                if first_time < latest_time:
-                    historical_titles[source_id].add(item.title)
+                title = item.title
 
-        # 检查是否是当天第一次抓取（没有任何历史标题）
-        # 如果所有平台的历史标题集合都为空，说明只有一个抓取批次，不应该有"新增"标题
-        has_historical_data = any(len(titles) > 0 for titles in historical_titles.values())
-        if not has_historical_data:
+                # 如果标题已存在，保留更早的首次出现时间
+                if title not in all_titles_with_time[source_id]:
+                    all_titles_with_time[source_id][title] = {
+                        "first_time": first_time,
+                        "ranks": [item.rank],
+                        "url": item.url or "",
+                        "mobileUrl": item.mobile_url or "",
+                    }
+                else:
+                    # 如果这个标题的首次出现时间更早，更新它
+                    if first_time < all_titles_with_time[source_id][title]["first_time"]:
+                        all_titles_with_time[source_id][title]["first_time"] = first_time
+
+        # 如果没有基准时间（从未推送过），需要找到昨天第一次抓取时间
+        if base_time_str is None:
+            # 找到所有标题中最早的首次出现时间（优先从昨天的数据中找）
+            earliest_time = None
+            for source_id, titles in all_titles_with_time.items():
+                for title_data in titles.values():
+                    first_time = title_data["first_time"]
+                    # 优先选择昨天的数据
+                    if first_time.startswith(yesterday_date):
+                        if earliest_time is None or first_time < earliest_time:
+                            earliest_time = first_time
+            
+            # 如果昨天没有数据，使用今天最早的数据
+            if earliest_time is None:
+                for source_id, titles in all_titles_with_time.items():
+                    for title_data in titles.values():
+                        first_time = title_data["first_time"]
+                        if earliest_time is None or first_time < earliest_time:
+                            earliest_time = first_time
+            
+            if earliest_time:
+                # 提取时间部分用于比较
+                if ' ' in earliest_time:
+                    base_time_str = earliest_time.split()[0] + " " + earliest_time.split()[1][:5]
+                else:
+                    base_time_str = earliest_time[:16]  # YYYY-MM-DD HH:MM
+                print(f"[增量检测] 使用第一次抓取时间作为基准: {earliest_time}")
+
+        if not base_time_str:
+            # 无法确定基准时间，返回空
             return {}
 
-        # 步骤3：找出新增标题 = 最新批次标题 - 历史标题
+        # 检测新增标题：首次出现时间晚于基准时间的标题
         new_titles = {}
-        for source_id, source_latest_titles in latest_titles.items():
-            historical_set = historical_titles.get(source_id, set())
+        for source_id, titles in all_titles_with_time.items():
             source_new_titles = {}
-
-            for title, title_data in source_latest_titles.items():
-                if title not in historical_set:
-                    source_new_titles[title] = title_data
+            for title, title_data in titles.items():
+                first_time = title_data["first_time"]
+                # 比较时间：如果首次出现时间晚于基准时间，则是新增标题
+                # 时间格式：YYYY-MM-DD HH:MM:SS 或 YYYY-MM-DD HH:MM
+                if ' ' in first_time:
+                    first_time_str = first_time.split()[0] + " " + first_time.split()[1][:5]
+                else:
+                    first_time_str = first_time[:16]
+                
+                if first_time_str > base_time_str:
+                    source_new_titles[title] = {
+                        "ranks": title_data["ranks"],
+                        "url": title_data["url"],
+                        "mobileUrl": title_data["mobileUrl"],
+                    }
 
             if source_new_titles:
                 new_titles[source_id] = source_new_titles
@@ -261,6 +355,8 @@ def detect_latest_new_titles_from_storage(
 
     except Exception as e:
         print(f"[存储] 从存储后端检测新标题失败: {e}")
+        import traceback
+        traceback.print_exc()
         return {}
 
 
@@ -270,7 +366,12 @@ def detect_latest_new_titles(
     quiet: bool = False,
 ) -> Dict:
     """
-    检测当日最新批次的新增标题（从存储后端）
+    检测新增标题（从上次推送到现在的所有新增）
+
+    修改说明：
+    - 原逻辑：只检测最新一次抓取的新增标题
+    - 新逻辑：检测从上次推送时间之后的所有新增标题
+    - 如果今天未推送过，则检测从当天第一次抓取之后的所有新增标题
 
     Args:
         storage_manager: 存储管理器实例
@@ -283,5 +384,5 @@ def detect_latest_new_titles(
     new_titles = detect_latest_new_titles_from_storage(storage_manager, current_platform_ids)
     if new_titles and not quiet:
         total_new = sum(len(titles) for titles in new_titles.values())
-        print(f"[存储] 从存储后端检测到 {total_new} 条新增标题")
+        print(f"[存储] 从存储后端检测到 {total_new} 条新增标题（从上次推送到现在）")
     return new_titles

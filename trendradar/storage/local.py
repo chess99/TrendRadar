@@ -190,6 +190,10 @@ class LocalStorageBackend(SQLiteStorageMixin, StorageBackend):
             print(f"[本地存储] 推送记录已保存: {report_type} at {now_str}")
         return success
 
+    def get_last_push_time(self, date: Optional[str] = None) -> Optional[str]:
+        """获取上次推送时间"""
+        return self._get_last_push_time_impl(date)
+
     # ========================================
     # RSS 数据存储方法
     # ========================================

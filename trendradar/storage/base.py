@@ -7,7 +7,7 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional, Any
+from typing import Any, Dict, List, Optional
 
 
 @dataclass
@@ -461,6 +461,19 @@ class StorageBackend(ABC):
 
         Returns:
             是否记录成功
+        """
+        pass
+
+    @abstractmethod
+    def get_last_push_time(self, date: Optional[str] = None) -> Optional[str]:
+        """
+        获取上次推送时间
+
+        Args:
+            date: 日期字符串（YYYY-MM-DD），默认为今天
+
+        Returns:
+            上次推送时间字符串（格式：YYYY-MM-DD HH:MM:SS），如果今天未推送过则返回 None
         """
         pass
 
