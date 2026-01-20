@@ -13,6 +13,14 @@
 3. **跨天数据读取**：验证能否正确读取今天和昨天的数据
 4. **增量检测逻辑**：测试26小时限制和基准时间逻辑
 
+### `simulate_incremental_push.py`
+
+基于本地 SQLite 数据，模拟增量推送并输出内容（不联网、不推送）：
+
+1. **强制本地存储**：避免访问远程 S3
+2. **增量检测**：读取今天/昨天数据并计算新增标题
+3. **推送内容预览**：输出与企业微信等渠道一致的分批内容
+
 ## 运行测试
 
 ### 方式一：直接运行
@@ -23,6 +31,11 @@ python tests/test_incremental_detection.py
 
 # Linux/Mac
 python3 tests/test_incremental_detection.py
+```
+
+```bash
+# Linux/Mac
+python3 tests/simulate_incremental_push.py --format wework
 ```
 
 ### 方式二：使用 pytest（如果安装了）

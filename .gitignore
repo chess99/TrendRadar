@@ -40,6 +40,7 @@ docker/.env
 
 # 输出目录（可选，根据项目需要决定是否忽略）
 # output/
+/output
 
 # 临时文件
 *.tmp

@@ -1,4 +1,7 @@
 # coding=utf-8
+# input: sqlite db files for local/remote storage
+# output: read/write helpers for news/rss data and push/crawl records
+# pos: storage sqlite mixin; update header and storage/README.md
 """
 SQLite 存储 Mixin
 
@@ -770,12 +773,13 @@ class SQLiteStorageMixin:
             上次推送时间字符串（格式：YYYY-MM-DD HH:MM:SS），如果从未推送过则返回 None
         """
         try:
-            # 获取今天和昨天的日期
+            # 获取今天、昨天和前天的日期（覆盖 26 小时窗口）
             today = self._format_date_folder(None)
             yesterday_date = (self._get_configured_time() - timedelta(days=1)).strftime("%Y-%m-%d")
+            day_before_yesterday = (self._get_configured_time() - timedelta(days=2)).strftime("%Y-%m-%d")
             
-            # 查询今天和昨天的推送记录
-            dates_to_check = [today, yesterday_date]
+            # 查询最近三天的推送记录
+            dates_to_check = [today, yesterday_date, day_before_yesterday]
             last_push_time = None
             
             for check_date in dates_to_check:
